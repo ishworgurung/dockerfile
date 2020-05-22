@@ -1,17 +1,30 @@
 package main
 
-// Generate Dockerfile from a Docker image
 import (
 	"flag"
 	"fmt"
 	"os"
 )
 
+// Generate Dockerfile from a Docker image.
+//
+// Docker by design, only fetches leaf container image *if* the
+// container was pulled from a remote repository and as such
+// cannot get the true base image.
+// If however, the image was built locally, it will have full
+// tagged layers and so it is possible to fetch the parent image that
+// it was built from.
+// More detail at https://windsock.io/explaining-docker-image-ids/ and https://stackoverflow.com/a/59894125.
+
 func main() {
 	imageIdOpt := flag.String("i", "", "-i [imageid|layerid]")
 	imageNameOpt := flag.String("n", "", "-n [foobar:latest|foobar:1.1.2]")
-	imageRepo := flag.String("r", "docker.io/library", "-r [02345511234.dkr.ap-southeast-2.aws.com/foobar|asia.gcr.io/google-containers]")
+	imageRepo := flag.String("r", "docker.io/library", "-r registry [191229840194.dkr.ecr.us-west-2.amazonaws.com|asia.gcr.io/google-containers]")
 	loglevel := flag.String("l", "info", "-l [info|debug|warn|fatal|error]")
+	username := flag.String("u", "", "-u [registry username]")
+	password := flag.String("p", "", "-p [registry password]")
+	layersTree := flag.Bool("t", false, "-t [true|false] (for image layer visualisation)")
+
 	flag.Parse()
 
 	var (
@@ -36,7 +49,7 @@ func main() {
 		// Pull image from registry since it does not exist in the local disk
 		if len(dir.imageId) == 0 {
 			dir.zlog.Debug().Msg("the image could not be found in local disk")
-			if err = dir.pullImage(); err != nil {
+			if err = dir.pullImage(*username, *password, dir.repo, dir.imageName); err != nil {
 				dir.zlog.Fatal().Msg(err.Error())
 			}
 		}
@@ -67,4 +80,13 @@ func main() {
 		dir.zlog.Fatal().Msg(err.Error())
 	}
 	fmt.Printf("%s", dir.dockerfile)
+
+	if *layersTree {
+		dir.zlog.Info().Msg("printing all local images layer tree")
+		// nate/dockviz:latest is public on docker.io/library
+		if err := dir.runContainer(
+			"docker.io", "nate/dockviz:latest", []string{"images", "-t"}, "", "", false); err != nil {
+			dir.zlog.Error().Msg(err.Error())
+		}
+	}
 }

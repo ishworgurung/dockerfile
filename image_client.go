@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,8 @@ import (
 	"time"
 
 	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/client"
 	"github.com/rs/zerolog"
 )
@@ -37,13 +40,14 @@ func newDockerImageClient(repo string, loglevel string) DockerImageClient {
 		ll = zerolog.InfoLevel
 	}
 	zerolog.SetGlobalLevel(ll)
-
 	output := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}
 	zlog := zerolog.New(output).With().Timestamp().Logger()
+
 	cli, err := client.NewEnvClient()
 	if err != nil {
 		zlog.Fatal().Msg(err.Error())
 	}
+
 	dic := DockerImageClient{
 		zlog: zlog,
 		cli:  cli,
@@ -53,7 +57,7 @@ func newDockerImageClient(repo string, loglevel string) DockerImageClient {
 }
 
 func (d *DockerImageClient) getImageIdByName() (string, error) {
-	// TODO: a better way is to use a filter.
+	// TODO: a better way is to use a image list filter.
 	imageList, err := d.cli.ImageList(context.Background(), types.ImageListOptions{})
 	if err != nil {
 		return "", err
@@ -134,16 +138,44 @@ func (d *DockerImageClient) dockerFile(base string) (string, error) {
 	return df, nil
 }
 
-func (d *DockerImageClient) pullImage() error {
+func (d *DockerImageClient) updateImagePullOptions(regUsername, regPassword string) (types.ImagePullOptions, error) {
+	if len(regUsername) >= 0 && len(regPassword) >= 0 {
+		d.username = regUsername
+		d.password = regPassword
+		authConfig := types.AuthConfig{
+			Username: regUsername,
+			Password: regPassword,
+		}
+		encodedJSON, err := json.Marshal(authConfig)
+		if err != nil {
+			return types.ImagePullOptions{}, err
+		}
+		authStr := base64.URLEncoding.EncodeToString(encodedJSON)
+		return types.ImagePullOptions{RegistryAuth: authStr}, nil
+	}
+	return types.ImagePullOptions{}, nil
+}
+func (d *DockerImageClient) pullImage(regUsername, regPassword string, repo, imageName string) error {
 	if len(d.repo) == 0 {
 		return errors.New("invalid repo")
 	}
 	if len(d.imageName) == 0 {
 		return errors.New("invalid image name")
 	}
-	canonicalRepo := d.repo + d.imageName
+	var canonicalRepo string
+	if len(repo) == 0 && len(imageName) == 0 {
+		canonicalRepo = d.repo + d.imageName
+	} else {
+		canonicalRepo = repo + "/" + imageName
+	}
 	d.zlog.Info().Msgf("pulling docker image '%s'", canonicalRepo)
-	i, err := d.cli.ImagePull(context.Background(), canonicalRepo, types.ImagePullOptions{})
+
+	imagePullOpts, err := d.updateImagePullOptions(regUsername, regPassword)
+	if err != nil {
+		return err
+	}
+
+	i, err := d.cli.ImagePull(context.Background(), canonicalRepo, imagePullOpts)
 	if err != nil {
 		return err
 	}
@@ -168,5 +200,67 @@ func (d *DockerImageClient) pullImage() error {
 		fmt.Printf("\r%s", pullEvent.Progress)
 	}
 	fmt.Println()
+	return nil
+}
+
+func (d *DockerImageClient) runContainer(repo string, name string, args []string, user, pass string, interactive bool) error {
+	ctx := context.Background()
+	d.zlog.Info().Msgf("pulling image '%s'\n", name)
+	if err := d.pullImage(user, pass, repo, name); err != nil {
+		return err
+	}
+	cc, err := d.cli.ContainerCreate(
+		ctx,
+		&container.Config{
+			Tty:          true,
+			OpenStdin:    interactive,
+			AttachStdout: interactive,
+			AttachStdin:  interactive,
+			Cmd:          args,
+			Image:        name,
+			Shell:        []string{"/bin/bash"},
+		},
+		&container.HostConfig{
+			// XXX: needs fixing
+			Mounts: []mount.Mount{
+				{
+					Type:   mount.TypeBind,
+					Source: "/var/run/docker.sock",
+					Target: "/var/run/docker.sock",
+				},
+			},
+		}, nil, "")
+	if err != nil {
+		return err
+	}
+	if err := d.cli.ContainerStart(ctx, cc.ID, types.ContainerStartOptions{}); err != nil {
+		return err
+	}
+
+	if interactive == false {
+		_, err = d.cli.ContainerWait(ctx, cc.ID)
+		if err != nil {
+			return err
+		}
+		out, err := d.cli.ContainerLogs(ctx, cc.ID, types.ContainerLogsOptions{ShowStdout: true})
+		if err != nil {
+			return err
+		}
+		io.Copy(os.Stdout, out)
+	}
+
+	// TODO: interactive containers need a different approach (stdin, stdout, stderr)
+	//if interactive == true {
+	//	r, err := d.cli.ContainerAttach(ctx, cc.ID, types.ContainerAttachOptions{})
+	//	if err != nil {
+	//		return err
+	//	}
+	//	io.Copy(os.Stdout, r.Reader)
+	//}
+
+	err = d.cli.ContainerStop(ctx, cc.ID, nil)
+	if err != nil {
+		return err
+	}
 	return nil
 }

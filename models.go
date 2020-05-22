@@ -5,7 +5,7 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// Pull image event response from Docker server
+// Pull image event response from Docker daemon
 type DockerImagePullEvent struct {
 	Status         string `json:"status"`
 	Error          string `json:"error"`
@@ -24,4 +24,6 @@ type DockerImageClient struct {
 	imageId    string
 	repo       string
 	dockerfile string
+	username   string
+	password   string
 }
