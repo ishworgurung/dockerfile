@@ -51,7 +51,7 @@ func newDockerImageClient(repo string, loglevel string) DockerImageClient {
 	dic := DockerImageClient{
 		zlog: zlog,
 		cli:  cli,
-		repo: repo + "/",
+		repo: repo,
 	}
 	return dic
 }
@@ -65,9 +65,9 @@ func (d *DockerImageClient) getImageIdByName() (string, error) {
 	for _, image := range imageList {
 		for _, i := range image.RepoTags {
 			// e.g. `asia.gcr.io/google-containers/ubuntu-slim:0.14` vs. `ubuntu:focal`
-			// The first one is fully canonicalize whereas the second one is integrated
+			// The first one is fully canonicalized whereas the second one is integrated
 			// with Docker to use `docker.io/library/ubuntu:focal` internally. We look for both matches.
-			if len(i) > 0 && (i == (d.repo+d.imageName) || (i == d.imageName)) {
+			if len(i) > 0 && (i == (d.repo+"/"+d.imageName) || (i == d.imageName)) {
 				// Found
 				return image.ID, nil
 			}
@@ -168,13 +168,12 @@ func (d *DockerImageClient) pullImage(regUsername, regPassword string, repo, ima
 	} else {
 		canonicalRepo = repo + "/" + imageName
 	}
-	d.zlog.Info().Msgf("pulling docker image '%s'", canonicalRepo)
+	d.zlog.Info().Msgf("pulling docker image '%s' from '%s'", imageName, canonicalRepo)
 
 	imagePullOpts, err := d.updateImagePullOptions(regUsername, regPassword)
 	if err != nil {
 		return err
 	}
-
 	i, err := d.cli.ImagePull(context.Background(), canonicalRepo, imagePullOpts)
 	if err != nil {
 		return err
